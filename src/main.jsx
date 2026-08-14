@@ -18,7 +18,7 @@ const modes = [
   ['opposition_only', 'Opposition Countries Only', 'Generate POIs specifically targeting the selected opposition countries.'],
   ['opposition_agenda', 'Opposition + Agenda', 'Generate POIs for selected opposition countries specifically tied to the agenda.'],
 ];
-const progressStages = ['INITIALIZING', 'READING AGENDA', 'PORTFOLIO INTELLIGENCE', 'TARGET INTELLIGENCE', 'RESEARCH PLANNING', 'RESEARCHING EVIDENCE', 'ANALYZING LEGAL FRAMEWORKS', 'GENERATING POIs', 'VALIDATING STRUCTURE', 'FACT CHECK PASS 1', 'FACT CHECK PASS 2', 'CALCULATING PRESSURE', 'FINALIZING CHITS', 'PREPARING DOCX'];
+const progressStages = ['INITIALIZING', 'READING AGENDA', 'BACKGROUND GUIDE ANALYSIS', 'PORTFOLIO INTELLIGENCE', 'TARGET INTELLIGENCE', 'RESEARCH PLANNING', 'RESEARCHING EVIDENCE', 'ANALYZING LEGAL FRAMEWORKS', 'GENERATING POIs', 'VALIDATING STRUCTURE', 'FACT CHECK PASS 1', 'FACT CHECK PASS 2', 'CALCULATING PRESSURE', 'FINALIZING CHITS', 'PREPARING DOCX'];
 const MemoWorldMap = React.memo(WorldMap);
 
 function App() {
@@ -28,13 +28,21 @@ function App() {
   const [sliders, setSliders] = useState(defaultSliders);
   const [poiCount, setPoiCount] = useState(5);
   const [poisPerCountry, setPoisPerCountry] = useState(0);
-  const [selected, setSelected] = useState([]);
+  const [generateOppositionPois, setGenerateOppositionPois] = useState(true);
+  const [portfolioCountry, setPortfolioCountry] = useState(null);
   const [oppositionCountries, setOppositionCountries] = useState([]);
   const [oppositionInput, setOppositionInput] = useState('');
   const [oppositionInvalid, setOppositionInvalid] = useState([]);
   const [mode, setMode] = useState('general');
   const [includeFollowUp, setIncludeFollowUp] = useState(false);
   const [poiTypes, setPoiTypes] = useState(['AUTO']);
+  const [customPoiType, setCustomPoiType] = useState('');
+  const [researchAiEnabled, setResearchAiEnabled] = useState(true);
+  const [researchNotes, setResearchNotes] = useState('');
+  const [researchLinks, setResearchLinks] = useState('');
+  const [backgroundGuide, setBackgroundGuide] = useState(null);
+  const [freezeDate, setFreezeDate] = useState('');
+  const [extensiveLegalities, setExtensiveLegalities] = useState(false);
   const [activity, setActivity] = useState([]);
   const [portfolioProfile, setPortfolioProfile] = useState(null);
   const [recommendations, setRecommendations] = useState([]);
@@ -72,9 +80,22 @@ function App() {
   const showError = (err) => setError({ message: err.message || 'Generation failed. Please try again.', diagnostic: err.diagnostic, status: err.status, category: err.category });
   const pushProgress = (next) => { setStatus(next); setActivity((items) => [{ time: new Date().toLocaleTimeString(), stage: next.stage, detail: next.detail, done: next.done, total: next.total }, ...items].slice(0, 14)); };
 
-  const selectedPortfolio = selected[0];
+  const selectedPortfolio = portfolioCountry;
   const geminiStats = getGeminiTelemetry();
   const modelSelection = { modelMode, manualModelId };
+
+  const setOppositionState = useCallback((items) => {
+    setOppositionCountries(items);
+    setOppositionInput(items.map((item) => item.name).join(', '));
+    setOppositionInvalid([]);
+  }, []);
+
+  const readBackgroundGuide = async (file) => {
+    if (!file) { setBackgroundGuide(null); return; }
+    const text = await file.text();
+    const compact = text.replace(/\s+/g, ' ').trim().slice(0, 12000);
+    setBackgroundGuide({ name: file.name, type: file.type || 'text/plain', size: file.size, text: compact });
+  };
   const refreshModels = async (verify = false) => {
     if (!form.apiKey.trim()) { setError({ message: 'Missing Gemini API key. Enter your key and try again.' }); return; }
     setModelLoading(true); setError(null);
@@ -90,18 +111,20 @@ function App() {
     const validation = validateMissionInputs({ ...form, poiCount });
     setError(validation ? { message: validation } : null);
     if (validation) return;
+    if (poiTypes.includes('CUSTOM') && !customPoiType.trim()) { setError({ message: 'Enter a custom POI type instruction or deselect CUSTOM.' }); return; }
+    if (mode !== 'general' && generateOppositionPois && !oppositionCountries.length) { setError({ message: 'Selected opposition-country modes need at least one opposition country.' }); return; }
     setBusy(true);
     setChits([]);
     setRecommendations([]);
     try {
       setActivity([]);
-      const result = await generateMission({ form: { ...form, portfolio: selectedPortfolio?.name || form.portfolio }, sliders, selectedTargets: oppositionCountries, oppositionCountries, targetingMode: mode, includeFollowUp, poiCount, poisPerCountry, poiTypes, onProgress: pushProgress, modelSelection });
+      const result = await generateMission({ form: { ...form, portfolio: selectedPortfolio?.name || form.portfolio }, sliders, portfolioCountry: selectedPortfolio, oppositionCountries, targetingMode: mode, includeFollowUp, poiCount, poisPerCountry, generateOppositionPois, poiTypes, customPoiType, researchConfig: { researchAiEnabled, researchNotes, researchLinks, backgroundGuide, freezeDate, extensiveLegalities }, onProgress: pushProgress, modelSelection });
       setPortfolioProfile(result.portfolioProfile);
       setRecommendations(result.recommendedTargets || []);
       setChits(result.chits);
       setModelInfo(result.modelInfo || null);
       if (result.chits.length < poiCount && mode !== 'opposition_only') setError({ message: `${result.chits.length} / ${poiCount} POIs generated. Gemini did not return enough distinct, defensible POIs after retry attempts. No duplicates were inserted.` });
-      if (!result.chits.length) setError({ message: mode === 'opposition_only' && !oppositionCountries.length ? 'Selected Targets Only needs at least one selected target. Zero selected targets is valid in Selected + Global Research mode.' : 'No defensible targets were discovered. Try Selected + Global Research or refine the agenda.' });
+      if (!result.chits.length) setError({ message: mode !== 'general' && !oppositionCountries.length ? 'Selected opposition-country modes need at least one opposition country.' : 'No defensible targets were discovered. Try General V0 Mode or refine the agenda/research inputs.' });
     } catch (err) {
       showError(err);
     } finally {
@@ -131,7 +154,7 @@ function App() {
   const copyText = (text) => navigator.clipboard?.writeText(text).catch(() => setError({ message: 'Clipboard access was blocked by the browser.' }));
   const copyAll = () => copyText(chits.map((chit, index) => `POI ${index + 1} — ${chit.target}\n${chit.poi}`).join('\n\n'));
   const exportBrief = (items = chits) => {
-    try { pushProgress({ stage: 'PREPARING DOCX', detail: 'Preparing professional DOCX tactical brief.', done: items.length, total: items.length || 1 }); downloadBrief({ form, sliders, portfolioProfile, chits: items, poiCount, selectedTargets: oppositionCountries, modelInfo, targetMode: mode }); }
+    try { pushProgress({ stage: 'PREPARING DOCX', detail: 'Preparing professional DOCX tactical brief.', done: items.length, total: items.length || 1 }); downloadBrief({ form: { ...form, portfolio: selectedPortfolio?.name || form.portfolio }, sliders, portfolioProfile, chits: items, poiCount, selectedTargets: oppositionCountries, modelInfo, targetMode: mode }); }
     catch { setError({ message: 'DOCX export failed. Please try again in a modern browser.' }); }
   };
 
@@ -171,7 +194,15 @@ function App() {
         <h2>Targeting Mode</h2>
         <div className="modes">{modes.map(([id, label, help]) => <label key={id} className="mode"><input type="radio" checked={mode === id} onChange={() => setMode(id)} /> <b>{label}</b><small>{help}</small></label>)}</div>
         <label>Total POIs<input type="number" min="1" max="20" value={poiCount} onChange={(e) => setPoiCount(Math.max(1, Math.min(20, Number(e.target.value) || 1)))} /></label>
-        <label>POIs per opposition country<input type="number" min="0" max="10" value={poisPerCountry} onChange={(e) => setPoisPerCountry(Math.max(0, Math.min(10, Number(e.target.value) || 0)))} /></label>
+        <label>POIs per Country<input type="number" min="0" max="10" value={poisPerCountry} onChange={(e) => setPoisPerCountry(Math.max(0, Math.min(10, Number(e.target.value) || 0)))} /></label>
+        <label className="check switchField"><input type="checkbox" checked={generateOppositionPois} onChange={(e) => setGenerateOppositionPois(e.target.checked)} /><span className="glassSwitch" aria-hidden="true"><i /></span><span>Generate POIs for opposition countries</span></label>
+        <label>Freeze Date<input type="date" value={freezeDate} onChange={(e) => setFreezeDate(e.target.value)} /></label>
+        <label className="check switchField"><input type="checkbox" checked={researchAiEnabled} onChange={(e) => setResearchAiEnabled(e.target.checked)} /><span className="glassSwitch" aria-hidden="true"><i /></span><span>Research AI</span></label>
+        <label className="check switchField"><input type="checkbox" checked={extensiveLegalities} onChange={(e) => setExtensiveLegalities(e.target.checked)} /><span className="glassSwitch" aria-hidden="true"><i /></span><span>Extensive Legalities</span></label>
+        <label>Research Notes<textarea value={researchNotes} onChange={(e) => setResearchNotes(e.target.value)} placeholder="Optional research priorities. ChitForge treats notes as instructions, not verified facts." /></label>
+        <label>Research Links<textarea value={researchLinks} onChange={(e) => setResearchLinks(e.target.value)} placeholder="Optional source URLs, one per line or comma-separated. Links are research anchors, not automatically trusted evidence." /></label>
+        <label className="backgroundPicker guidePicker">Background Guide<input type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" onChange={(e) => readBackgroundGuide(e.target.files?.[0]).catch((err) => setError({ message: `Background guide could not be read: ${err.message}` }))} /></label>
+        {backgroundGuide && <div className="notice"><b>Guide loaded:</b> {backgroundGuide.name}<br />{backgroundGuide.text.length.toLocaleString()} characters extracted and compacted once for mission context.</div>}
         <label className="check switchField"><input type="checkbox" checked={includeFollowUp} onChange={(e) => setIncludeFollowUp(e.target.checked)} /><span className="glassSwitch" aria-hidden="true"><i /></span><span>Generate Follow-Up</span></label>
         <h2>POI Type</h2>
         <div className="typeGrid" role="group" aria-label="POI type selection">{POI_TYPES.map((type) => <label key={type} className={`typeChip ${poiTypes.includes(type) ? 'active' : ''}`}>
@@ -182,14 +213,15 @@ function App() {
             return next.length ? next : ['AUTO'];
           })} /> {type}
         </label>)}</div>
+        {poiTypes.includes('CUSTOM') && <label>Custom POI Type<textarea value={customPoiType} onChange={(e) => setCustomPoiType(e.target.value)} placeholder="e.g. Treaty compliance contradiction tied to documented foreign-policy actions" /></label>}
 
         <div className="notice"><b>TARGETS: OPTIONAL</b><br />{oppositionCountries.length ? `${oppositionCountries.length} opposition countr(y/ies) selected.` : 'GENERAL V0 MODE can still discover targets; opposition modes need opposition countries.'}</div>
         {Object.keys(sliders).map((key) => <GlassRange key={key} name={key} value={sliders[key]} info={key === 'length' ? lengthInfo(sliders.length) : null} onCommit={commitSlider} />)}
         <button className="primary" onClick={runGeneration} disabled={busy}>{busy ? 'Synthesizing Tactical POIs…' : 'Generate Tactical POI Array'}</button>
         {error && <ErrorBox error={error} />}
       </section>
-      <section className="panel mapPanel"><h2>Real World Target Map</h2><p className="muted">Left-click selects the portfolio country. Right-click toggles opposition countries in red.</p><MemoWorldMap selected={selected} setSelected={(items) => { setSelected(items); if (items[0]) updateForm('portfolio', items[0].name); }} portfolio={selectedPortfolio?.name || form.portfolio} oppositionCountries={oppositionCountries} setOppositionCountries={(items) => { setOppositionCountries(items); setOppositionInput(items.map((item) => item.name).join(', ')); setOppositionInvalid([]); }} /></section>
-      <aside className="panel queue glass-sidebar"><details className="settingsPanel" open><summary>Generation Settings</summary><div className="settingsGrid"><span>Total POIs<b>{poiCount}</b></span><span>POIs/Country<b>{poisPerCountry}</b></span><span>Opposition<b>{oppositionCountries.length}</b></span><span>POI Type<b>{poiTypes.join(', ')}</b></span><span>Target Mode<b>{mode}</b></span><span>Follow-ups<b>{includeFollowUp ? 'ON' : 'OFF'}</b></span><span>Model<b>{modelInfo?.model?.displayName || modelMode}</b></span><span>Aggression<b>{sliders.aggression}</b></span><span>Controversy<b>{sliders.controversy}</b></span><span>Diplomacy<b>{sliders.diplomacy}</b></span><span>Length<b>{sliders.length}</b></span></div><details><summary>Stats for Nerds</summary><div className="settingsGrid"><span>Gemini Requests<b>{geminiStats.requests.length}</b></span><span>Cache Hits<b>{geminiStats.cacheHits}</b></span><span>Cache Misses<b>{geminiStats.cacheMisses}</b></span><span>In-flight Dedupes<b>{geminiStats.inFlightDedupes}</b></span><span>Retries<b>{geminiStats.retries}</b></span><span>429s<b>{geminiStats.rateLimits}</b></span><span>5xx<b>{geminiStats.failures5xx}</b></span><span>Provider Quota<b>{geminiStats.providerQuota}</b></span></div><small>Quota is shown only when provider-reported; otherwise UNKNOWN.</small></details><GlassRange name="opacity" value={uiOpacity} onCommit={commitOpacity} /></details><h2>Portfolio</h2>{selectedPortfolio ? <button className="pill" onClick={() => setSelected([])}>{selectedPortfolio.name}<span>{selectedPortfolio.iso}</span>×</button> : <p className="muted">No map portfolio selected; using typed portfolio.</p>}<h2>Opposition Countries</h2><textarea value={oppositionInput} onChange={(e) => { const value = e.target.value; setOppositionInput(value); const parsed = parseCountryListInput(value); setOppositionCountries(parsed.resolved); setOppositionInvalid(parsed.invalid); }} placeholder="China, United States, Russia" />{oppositionInvalid.length > 0 && <p className="oppositionError">Unresolved: {oppositionInvalid.join(', ')}</p>}{oppositionCountries.length ? oppositionCountries.map((c) => <button key={c.iso} className="pill" onClick={() => { const next = oppositionCountries.filter((x) => x.iso !== c.iso); setOppositionCountries(next); setOppositionInput(next.map((item) => item.name).join(', ')); }}>{c.name}<span>{c.iso}</span>×</button>) : <p className="muted">No opposition countries selected. General mode can still generate.</p>}<button onClick={() => { setSelected([]); setOppositionCountries([]); setOppositionInput(''); setOppositionInvalid([]); }}>Clear selections</button>{recommendations.length > 0 && <><h2>AI Recommended Targets</h2>{recommendations.map((target) => <div className="recommendation" key={`${target.name}-${target.reason}`}><b>{target.name}</b><small>{target.reason}</small></div>)}</>}{(busy || status) && <ProgressPanel status={status} poiCount={poiCount} activity={activity} />}</aside>
+      <section className="panel mapPanel"><h2>Real World Target Map</h2><p className="muted">Left-click selects one portfolio country. Right-click toggles red opposition countries.</p><MemoWorldMap portfolioCountry={portfolioCountry} setPortfolioCountry={(country) => { setPortfolioCountry(country); updateForm('portfolio', country.name); }} portfolio={selectedPortfolio?.name || form.portfolio} oppositionCountries={oppositionCountries} setOppositionCountries={setOppositionState} /></section>
+      <aside className="panel queue glass-sidebar"><details className="settingsPanel" open><summary>Generation Settings</summary><div className="settingsGrid"><span>Total POIs<b>{poiCount}</b></span><span>POIs/Country<b>{poisPerCountry}</b></span><span>Opposition POIs<b>{generateOppositionPois ? 'ON' : 'OFF'}</b></span><span>Opposition<b>{oppositionCountries.length}</b></span><span>Freeze Date<b>{freezeDate || 'NONE'}</b></span><span>Research AI<b>{researchAiEnabled ? 'ON' : 'OFF'}</b></span><span>Legalities<b>{extensiveLegalities ? 'EXTENSIVE' : 'STANDARD'}</b></span><span>POI Type<b>{poiTypes.join(', ')}</b></span><span>Target Mode<b>{mode}</b></span><span>Follow-ups<b>{includeFollowUp ? 'ON' : 'OFF'}</b></span><span>Model<b>{modelInfo?.model?.displayName || modelMode}</b></span><span>Aggression<b>{sliders.aggression}</b></span><span>Controversy<b>{sliders.controversy}</b></span><span>Diplomacy<b>{sliders.diplomacy}</b></span><span>Length<b>{sliders.length}</b></span></div><details><summary>Stats for Nerds</summary><div className="settingsGrid"><span>Total Requests<b>{geminiStats.totalRequests}</b></span><span>Observed OK<b>{geminiStats.successes}</b></span><span>Observed Failed<b>{geminiStats.failures}</b></span><span>Research Ops<b>{geminiStats.byOperation?.research || 0}</b></span><span>Generation Ops<b>{geminiStats.byOperation?.generation || 0}</b></span><span>Review Ops<b>{geminiStats.byOperation?.review || 0}</b></span><span>Gemini Requests<b>{geminiStats.requests.length}</b></span><span>Cache Hits<b>{geminiStats.cacheHits}</b></span><span>Cache Misses<b>{geminiStats.cacheMisses}</b></span><span>In-flight Dedupes<b>{geminiStats.inFlightDedupes}</b></span><span>Retries<b>{geminiStats.retries}</b></span><span>429s<b>{geminiStats.rateLimits}</b></span><span>5xx<b>{geminiStats.failures5xx}</b></span><span>Provider Quota<b>{geminiStats.providerQuota}</b></span></div><small>Quota is shown only when provider-reported; otherwise UNKNOWN.</small></details><GlassRange name="opacity" value={uiOpacity} onCommit={commitOpacity} /></details><h2>Portfolio</h2>{selectedPortfolio ? <button className="pill" onClick={() => setPortfolioCountry(null)}>{selectedPortfolio.name}<span>{selectedPortfolio.iso}</span>×</button> : <p className="muted">No map portfolio selected; using typed portfolio.</p>}<h2>Opposition Countries</h2><textarea value={oppositionInput} onChange={(e) => { const value = e.target.value; setOppositionInput(value); const parsed = parseCountryListInput(value); setOppositionCountries(parsed.resolved); setOppositionInvalid(parsed.invalid); }} placeholder="China, United States, Russia" />{oppositionInvalid.length > 0 && <p className="oppositionError">Unresolved: {oppositionInvalid.join(', ')}</p>}{oppositionCountries.length ? oppositionCountries.map((c) => <button key={c.iso} className="pill" onClick={() => { const next = oppositionCountries.filter((x) => x.iso !== c.iso); setOppositionCountries(next); setOppositionInput(next.map((item) => item.name).join(', ')); }}>{c.name}<span>{c.iso}</span>×</button>) : <p className="muted">No opposition countries selected. General mode can still generate.</p>}<button onClick={() => { setPortfolioCountry(null); setOppositionCountries([]); setOppositionInput(''); setOppositionInvalid([]); }}>Clear selections</button>{recommendations.length > 0 && <><h2>AI Recommended Targets</h2>{recommendations.map((target) => <div className="recommendation" key={`${target.name}-${target.reason}`}><b>{target.name}</b><small>{target.reason}</small></div>)}</>}{(busy || status) && <ProgressPanel status={status} poiCount={poiCount} activity={activity} />}</aside>
     </main>
     {portfolioProfile && <PortfolioIntel profile={portfolioProfile} />}
     {chits.length > 0 && <section className="poiWindow"><div className="arrayHeader"><div><span className="eyebrow">CHITFORGE</span><h2>TACTICAL POI ARRAY</h2><strong>{chits.length} / {poiCount} POIs GENERATED</strong>{modelInfo?.model && <strong>MODEL: {modelInfo.model.displayName}</strong>}<strong>FACT CHECK: 2-PASS</strong></div><div className="actions"><button onClick={copyAll}>Copy All</button><button onClick={() => exportBrief()}>Download DOCX</button><button onClick={runGeneration} disabled={busy}>Regenerate All</button></div></div><div className="chits">{chits.map((chit, i) => <ChitCard key={`${chit.target}-${i}-${chit.poi}`} chit={chit} number={i + 1} onCopy={copyText} onExport={() => exportBrief([chit])} onFollowUp={() => addFollowUp(i)} onRegenerate={() => regenerateOne(i)} />)}</div></section>}
@@ -304,7 +336,7 @@ function StatusBadge({ status }) {
 
 function SourceCard({ source }) {
   const domain = source.domain || domainFromUrl(source.url);
-  return <div className="sourceCard glass-source-card"><div><b>SOURCE</b><h3>{source.sourceName || 'Manual verification source'}</h3><p>Organization: {source.organization || 'MANUAL VERIFICATION'}<br />Published: {source.publicationDate || 'MANUAL VERIFICATION'}</p></div><div><b>STATUS</b><StatusBadge status={source.status || 'MANUAL VERIFICATION'} /><p><b>SOURCE QUALITY</b><br />{source.quality || 'LIMITED'}</p></div><p><b>CLAIM SUPPORTED</b><br />{source.claimSupported || source.claim || 'MANUAL VERIFICATION: claim support must be checked.'}</p>{source.url && <a className="sourceLink" href={source.url} target="_blank" rel="noreferrer">OPEN SOURCE ↗ {domain && <small>{domain}</small>}</a>}{source.verificationReason && <small>{source.verificationReason}</small>}</div>;
+  return <div className="sourceCard glass-source-card"><div><b>SOURCE</b><h3>{source.sourceName || 'Manual verification source'}</h3><p>Organization: {source.organization || 'MANUAL VERIFICATION'}<br />Published: {source.publicationDate || 'MANUAL VERIFICATION'}<br />Event: {source.eventDate || 'DATE UNCERTAIN'}</p></div><div><b>STATUS</b><StatusBadge status={source.status || 'MANUAL VERIFICATION'} /><p><b>SOURCE QUALITY</b><br />{source.quality || 'LIMITED'}</p></div><p><b>CLAIM SUPPORTED</b><br />{source.claimSupported || source.claim || 'MANUAL VERIFICATION: claim support must be checked.'}</p>{source.evidenceExcerpt && <p><b>EVIDENCE EXCERPT</b><br />{source.evidenceExcerpt}</p>}{source.freezeAssessment && <p><b>FREEZE DATE</b><br />{source.freezeAssessment}</p>}{source.url && <a className="sourceLink" href={source.url} target="_blank" rel="noreferrer">OPEN SOURCE ↗ {domain && <small>{domain}</small>}</a>}{source.verificationReason && <small>{source.verificationReason}</small>}</div>;
 }
 
 function ChitCard({ chit, number, onCopy, onFollowUp, onRegenerate }) {

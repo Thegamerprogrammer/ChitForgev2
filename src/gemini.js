@@ -7,7 +7,11 @@ const cache = new Map();
 const requestCache = new Map();
 const inFlight = new Map();
 const telemetry = { requests: [], cacheHits: 0, cacheMisses: 0, inFlightDedupes: 0, retries: 0, rateLimits: 0, failures5xx: 0, providerQuota: 'UNKNOWN' };
-export function getGeminiTelemetry() { return { ...telemetry, requests: telemetry.requests.slice(-50) }; }
+export function getGeminiTelemetry() {
+  const requests = telemetry.requests.slice(-50);
+  const byOperation = telemetry.requests.reduce((acc, item) => { acc[item.operation] = (acc[item.operation] || 0) + 1; return acc; }, {});
+  return { ...telemetry, requests, byOperation, totalRequests: telemetry.requests.length, successes: telemetry.requests.filter((item) => item.success).length, failures: telemetry.requests.filter((item) => item.success === false).length };
+}
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function stableHash(value) { let h = 0; for (let i = 0; i < value.length; i += 1) h = Math.imul(31, h) + value.charCodeAt(i) | 0; return String(h); }
 
@@ -100,7 +104,7 @@ export function pickModel(models, modelMode, manualModelId) {
   return selectBest(models);
 }
 
-export async function callGemini(apiKey, prompt, { modelMode = MODEL_SELECTION_MODES.BEST, manualModelId, schema = CHITFORGE_RESPONSE_SCHEMA, timeoutMs = 70000, onModelStatus } = {}) {
+export async function callGemini(apiKey, prompt, { modelMode = MODEL_SELECTION_MODES.BEST, manualModelId, schema = CHITFORGE_RESPONSE_SCHEMA, timeoutMs = 70000, onModelStatus, operation = 'generation' } = {}) {
   const discovered = await discoverGeminiModels(apiKey);
   const ranked = discovered.compatible;
   if (!ranked.length) throw new GeminiError('No Gemini text-generation models were returned for this API key. Refresh models or check Gemini API access.', { category: 'no-generation-models' });
@@ -111,9 +115,9 @@ export async function callGemini(apiKey, prompt, { modelMode = MODEL_SELECTION_M
   for (const model of candidates) {
     onModelStatus?.({ model, mode: modelMode, fallbackLog });
     try {
-      try { return { text: await rawGenerate(apiKey, model, prompt, schema, { timeoutMs, nativeJson: true }), model, mode: modelMode, fallbackLog, usedNativeJson: true }; }
+      try { return { text: await rawGenerate(apiKey, model, prompt, schema, { timeoutMs, nativeJson: true, operation }), model, mode: modelMode, fallbackLog, usedNativeJson: true }; }
       catch (err) {
-        if (err.category === 'http-400') { fallbackLog.push({ from: model.displayName, reason: 'structured-json-request-failed; retried plain JSON' }); return { text: await rawGenerate(apiKey, model, prompt, schema, { timeoutMs, nativeJson: false }), model, mode: modelMode, fallbackLog, usedNativeJson: false }; }
+        if (err.category === 'http-400') { fallbackLog.push({ from: model.displayName, reason: 'structured-json-request-failed; retried plain JSON' }); return { text: await rawGenerate(apiKey, model, prompt, schema, { timeoutMs, nativeJson: false, operation }), model, mode: modelMode, fallbackLog, usedNativeJson: false }; }
         throw err;
       }
     } catch (err) {
@@ -132,8 +136,8 @@ export async function repairJsonWithGemini(apiKey, rawText, { modelSelection, sc
 
 export async function callFactCheck(apiKey, prompt, { primaryModelId, modelSelection } = {}) {
   const discovered = await discoverGeminiModels(apiKey);
-  const model = selectFactCheckModel(discovered.compatible, primaryModelId) || pickModel(discovered.compatible, modelSelection?.modelMode, modelSelection?.manualModelId);
-  const response = await callGemini(apiKey, prompt, { modelMode: MODEL_SELECTION_MODES.MANUAL, manualModelId: model?.id, schema: FACT_CHECK_RESPONSE_SCHEMA, timeoutMs: 45000 });
+  const model = modelSelection?.modelMode === MODEL_SELECTION_MODES.MANUAL ? pickModel(discovered.compatible, modelSelection.modelMode, modelSelection.manualModelId) : (selectFactCheckModel(discovered.compatible, primaryModelId) || pickModel(discovered.compatible, modelSelection?.modelMode, modelSelection?.manualModelId));
+  const response = await callGemini(apiKey, prompt, { modelMode: MODEL_SELECTION_MODES.MANUAL, manualModelId: model?.id, schema: FACT_CHECK_RESPONSE_SCHEMA, timeoutMs: 45000, operation: 'review' });
   return response;
 }
 

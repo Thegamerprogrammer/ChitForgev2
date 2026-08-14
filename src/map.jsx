@@ -52,7 +52,7 @@ function normalizeCountry(geo) {
   return byId || byName || { iso: String(geo.id), name: geo.properties.name };
 }
 
-export function WorldMap({ selected, setSelected, portfolio, oppositionCountries = [], setOppositionCountries }) {
+export function WorldMap({ portfolioCountry, setPortfolioCountry, portfolio, oppositionCountries = [], setOppositionCountries }) {
   const [tooltip, setTooltip] = useState(null);
   const tooltipFrame = useRef(0);
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
@@ -64,7 +64,7 @@ export function WorldMap({ selected, setSelected, portfolio, oppositionCountries
     const path = geoPath(projection);
     return fc.features.map((geo) => ({ ...normalizeCountry(geo), d: path(geo) })).filter((c) => c.d && c.iso !== '010');
   }, []);
-  const selectedIso = new Set(selected.map((c) => c.iso));
+  const selectedIso = new Set(portfolioCountry ? [portfolioCountry.iso] : []);
   const oppositionIso = new Set(oppositionCountries.map((c) => c.iso));
   const portfolioText = portfolio.trim().toLowerCase();
   const applyTransform = useCallback((nextView) => {
@@ -72,7 +72,7 @@ export function WorldMap({ selected, setSelected, portfolio, oppositionCountries
   }, []);
   const toggle = (country) => {
     if (dragRef.current.moved) return;
-    setSelected([{ iso: country.iso, name: country.name }]);
+    setPortfolioCountry({ iso: country.iso, name: country.name });
   };
   const toggleOpposition = (event, country) => {
     event.preventDefault();
@@ -119,7 +119,7 @@ export function WorldMap({ selected, setSelected, portfolio, oppositionCountries
   }, [applyTransform, view.scale]);
 
   return <div className="mapWrap">
-    <div className="mapTools"><button type="button" onClick={() => setView((v) => ({ ...v, scale: Math.min(3, v.scale + 0.25) }))}>Zoom +</button><button type="button" onClick={() => setView((v) => ({ ...v, scale: Math.max(1, v.scale - 0.25) }))}>Zoom −</button><button type="button" onClick={() => setView({ scale: 1, x: 0, y: 0 })}>Reset</button><button type="button" onClick={() => { setSelected([]); setOppositionCountries?.([]); }}>Clear all</button></div>
+    <div className="mapTools"><button type="button" onClick={() => setView((v) => ({ ...v, scale: Math.min(3, v.scale + 0.25) }))}>Zoom +</button><button type="button" onClick={() => setView((v) => ({ ...v, scale: Math.max(1, v.scale - 0.25) }))}>Zoom −</button><button type="button" onClick={() => setView({ scale: 1, x: 0, y: 0 })}>Reset</button><button type="button" onClick={() => { setPortfolioCountry?.(null); setOppositionCountries?.([]); }}>Clear all</button></div>
     <svg className="pannableMap" viewBox="0 0 980 520" role="img" aria-label="Interactive real world map from Natural Earth geometry via world-atlas" onPointerDown={beginPan} onPointerMove={movePan} onPointerUp={endPan} onPointerCancel={endPan}>
       <defs><filter id="glow"><feGaussianBlur stdDeviation="3" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter></defs>
       <rect className="ocean" width="980" height="520" />
