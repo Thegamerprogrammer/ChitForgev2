@@ -21,13 +21,38 @@ const aliases = new Map([
   ['Tanzania', { iso: 'TZA', name: 'Tanzania' }],
 ]);
 
+function keyName(value) { return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); }
+
+const countryLookup = new Map();
+for (const c of countryList) {
+  const item = { iso: c.cca3, name: c.name.common };
+  [c.cca3, c.cca2, c.name.common, c.name.official, ...(c.altSpellings || [])].filter(Boolean).forEach((name) => countryLookup.set(keyName(name), item));
+}
+for (const [name, item] of aliases) countryLookup.set(keyName(name), item);
+['usa', 'us', 'u s', 'america'].forEach((name) => countryLookup.set(keyName(name), { iso: 'USA', name: 'United States' }));
+['uk', 'u k', 'britain', 'great britain'].forEach((name) => countryLookup.set(keyName(name), { iso: 'GBR', name: 'United Kingdom' }));
+['uae', 'u a e'].forEach((name) => countryLookup.set(keyName(name), { iso: 'ARE', name: 'United Arab Emirates' }));
+
+export function parseCountryListInput(value) {
+  const tokens = String(value || '').split(/[\n,;]+/).map((part) => part.trim()).filter(Boolean);
+  const resolved = [];
+  const invalid = [];
+  const seen = new Set();
+  for (const token of tokens) {
+    const match = countryLookup.get(keyName(token));
+    if (!match) { invalid.push(token); continue; }
+    if (!seen.has(match.iso)) { seen.add(match.iso); resolved.push(match); }
+  }
+  return { resolved, invalid };
+}
+
 function normalizeCountry(geo) {
   const byId = numericToCountry.get(String(geo.id).padStart(3, '0'));
   const byName = aliases.get(geo.properties.name);
   return byId || byName || { iso: String(geo.id), name: geo.properties.name };
 }
 
-export function WorldMap({ selected, setSelected, portfolio }) {
+export function WorldMap({ portfolioCountry, setPortfolioCountry, portfolio, oppositionCountries = [], setOppositionCountries }) {
   const [tooltip, setTooltip] = useState(null);
   const tooltipFrame = useRef(0);
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
@@ -39,14 +64,21 @@ export function WorldMap({ selected, setSelected, portfolio }) {
     const path = geoPath(projection);
     return fc.features.map((geo) => ({ ...normalizeCountry(geo), d: path(geo) })).filter((c) => c.d && c.iso !== '010');
   }, []);
-  const selectedIso = new Set(selected.map((c) => c.iso));
+  const selectedIso = new Set(portfolioCountry ? [portfolioCountry.iso] : []);
+  const oppositionIso = new Set(oppositionCountries.map((c) => c.iso));
   const portfolioText = portfolio.trim().toLowerCase();
   const applyTransform = useCallback((nextView) => {
     mapGroupRef.current?.setAttribute('transform', `translate(${nextView.x} ${nextView.y}) scale(${nextView.scale})`);
   }, []);
   const toggle = (country) => {
     if (dragRef.current.moved) return;
-    setSelected(selectedIso.has(country.iso) ? selected.filter((c) => c.iso !== country.iso) : [...selected, { iso: country.iso, name: country.name }]);
+    setPortfolioCountry({ iso: country.iso, name: country.name });
+  };
+  const toggleOpposition = (event, country) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (dragRef.current.moved || !setOppositionCountries) return;
+    setOppositionCountries(oppositionIso.has(country.iso) ? oppositionCountries.filter((c) => c.iso !== country.iso) : [...oppositionCountries, { iso: country.iso, name: country.name }]);
   };
   const moveTooltip = useCallback((event, country) => {
     const { offsetX, offsetY } = event.nativeEvent;
@@ -87,7 +119,7 @@ export function WorldMap({ selected, setSelected, portfolio }) {
   }, [applyTransform, view.scale]);
 
   return <div className="mapWrap">
-    <div className="mapTools"><button type="button" onClick={() => setView((v) => ({ ...v, scale: Math.min(3, v.scale + 0.25) }))}>Zoom +</button><button type="button" onClick={() => setView((v) => ({ ...v, scale: Math.max(1, v.scale - 0.25) }))}>Zoom −</button><button type="button" onClick={() => setView({ scale: 1, x: 0, y: 0 })}>Reset</button><button type="button" onClick={() => setSelected([])}>Clear all</button></div>
+    <div className="mapTools"><button type="button" onClick={() => setView((v) => ({ ...v, scale: Math.min(3, v.scale + 0.25) }))}>Zoom +</button><button type="button" onClick={() => setView((v) => ({ ...v, scale: Math.max(1, v.scale - 0.25) }))}>Zoom −</button><button type="button" onClick={() => setView({ scale: 1, x: 0, y: 0 })}>Reset</button><button type="button" onClick={() => { setPortfolioCountry?.(null); setOppositionCountries?.([]); }}>Clear all</button></div>
     <svg className="pannableMap" viewBox="0 0 980 520" role="img" aria-label="Interactive real world map from Natural Earth geometry via world-atlas" onPointerDown={beginPan} onPointerMove={movePan} onPointerUp={endPan} onPointerCancel={endPan}>
       <defs><filter id="glow"><feGaussianBlur stdDeviation="3" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter></defs>
       <rect className="ocean" width="980" height="520" />
@@ -95,7 +127,8 @@ export function WorldMap({ selected, setSelected, portfolio }) {
       {countries.map((country) => {
         const isPortfolio = portfolioText && (country.iso.toLowerCase() === portfolioText || country.name.toLowerCase() === portfolioText);
         const isSelected = selectedIso.has(country.iso);
-        return <path key={`${country.iso}-${country.name}`} tabIndex="0" d={country.d} data-iso={country.iso} className={`country ${isSelected ? 'selected' : ''} ${isPortfolio ? 'portfolio' : ''} ${isPortfolio && isSelected ? 'selfTarget' : ''}`} onClick={() => toggle(country)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggle(country); }} onMouseMove={(e) => moveTooltip(e, country)} onMouseLeave={hideTooltip}><title>{country.name} · {country.iso}</title></path>;
+        const isOpposition = oppositionIso.has(country.iso);
+        return <path key={`${country.iso}-${country.name}`} tabIndex="0" d={country.d} data-iso={country.iso} className={`country ${isSelected ? 'selected' : ''} ${isPortfolio ? 'portfolio' : ''} ${isPortfolio && isSelected ? 'selfTarget' : ''} ${isOpposition ? 'opposition' : ''}`} onClick={() => toggle(country)} onContextMenu={(e) => toggleOpposition(e, country)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggle(country); }} onMouseMove={(e) => moveTooltip(e, country)} onMouseLeave={hideTooltip}><title>{country.name} · {country.iso}</title></path>;
       })}
       </g>
     </svg>

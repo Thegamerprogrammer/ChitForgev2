@@ -673,3 +673,20 @@ button::after, .backgroundPicker::after, .sourceLink::after {
   opacity: .65;
 }
 .titleCard img { display: none; }
+
+.country.opposition { fill: rgba(255,75,92,.58); stroke: rgba(255,190,196,.98); stroke-width: 1.25; filter: drop-shadow(0 0 10px rgba(255,75,92,.42)); }
+.country.portfolio.opposition { stroke-dasharray: 4 2; }
+.oppositionError { color: #ffd0d0; margin-top: 6px; }
+
+/* Corrective V2 wiring pass: keep Liquid Glass, reduce cramped long-label controls. */
+.controls label { gap: 8px; }
+.controls textarea { min-height: 92px; resize: vertical; }
+.controls input[type="date"] { min-height: 44px; }
+.guidePicker { display: inline-flex; width: 100%; justify-content: center; text-align: center; }
+.queue textarea { min-height: 96px; width: 100%; resize: vertical; }
+.settingsGrid { grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); align-items: stretch; }
+.settingsGrid span { justify-content: space-between; min-width: 0; overflow-wrap: anywhere; }
+.modes { gap: 10px; }
+.mode { align-items: flex-start; }
+.mode small { line-height: 1.35; }
+.notice { line-height: 1.45; }

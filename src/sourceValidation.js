@@ -48,7 +48,7 @@ export function normalizeEvidenceSource(raw = {}) {
   const url = raw.url || raw.sourceUrl || raw.source_url || raw.link || '';
   const structural = validateSourceUrl(url);
   const sourceType = normalizeSourceType(raw.sourceType || raw.source_type || raw.sourceClassification || raw.type || organization);
-  return { sourceName, organization, publicationDate, url, claimSupported: raw.claimSupported || raw.claim || raw.text || 'MANUAL VERIFICATION: claim support must be checked.', sourceType, confidence: Number(raw.confidence || 0), quality: sourceQuality(sourceType), status: structural.status, verificationReason: structural.reason, domain: structural.domain || domainFromUrl(url) };
+  return { sourceName, organization, publicationDate, eventDate: raw.eventDate || raw.event_date || raw.incidentDate || '', evidenceExcerpt: raw.evidenceExcerpt || raw.excerpt || '', freezeAssessment: raw.freezeAssessment || raw.freeze_assessment || '', url, claimSupported: raw.claimSupported || raw.claim || raw.text || 'MANUAL VERIFICATION: claim support must be checked.', sourceType, confidence: Number(raw.confidence || 0), quality: sourceQuality(sourceType), status: structural.status, verificationReason: structural.reason, domain: structural.domain || domainFromUrl(url) };
 }
 
 export function applyFactCheckToSources(evidence = [], factCheck) {
