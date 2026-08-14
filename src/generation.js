@@ -3,16 +3,16 @@ import { findDuplicatePoiIndexes } from './validation.js';
 import { toInternalMission, validateInternalMission, extractJson } from './responseParser.js';
 import { applyFactCheckToSources, validateSources } from './sourceValidation.js';
 
-export async function generateMission({ form, sliders, selectedTargets, targetingMode, includeFollowUp, poiCount, poiTypes = ['AUTO'], onProgress, modelSelection }) {
+export async function generateMission({ form, sliders, selectedTargets, oppositionCountries = selectedTargets, targetingMode, includeFollowUp, poiCount, poisPerCountry = 0, poiTypes = ['AUTO'], onProgress, modelSelection }) {
   onProgress?.({ stage: 'INITIALIZING', detail: 'Initializing ChitForge synthesis engine.', done: 0, total: poiCount });
   onProgress?.({ stage: 'READING AGENDA', detail: 'Reading committee, agenda and portfolio inputs.', done: 0, total: poiCount });
-  const prompt = buildMissionPrompt({ form, sliders, selectedTargets, targetingMode, includeFollowUp, poiCount, poiTypes });
-  onProgress?.({ stage: 'ANALYZING PORTFOLIO', detail: 'Analyzing portfolio foreign-policy interests.', done: 0, total: poiCount });
-  onProgress?.({ stage: 'ANALYZING FOREIGN POLICY', detail: 'Mapping foreign-policy alignment and constraints.', done: 0, total: poiCount });
-  onProgress?.({ stage: 'MAPPING TARGETS', detail: 'Mapping selected and global target opportunities.', done: 0, total: poiCount });
+  const prompt = buildMissionPrompt({ form, sliders, selectedTargets: oppositionCountries, targetingMode, includeFollowUp, poiCount, poisPerCountry, poiTypes });
+  onProgress?.({ stage: 'PORTFOLIO INTELLIGENCE', detail: 'Analyzing portfolio foreign-policy interests.', done: 0, total: poiCount });
+  onProgress?.({ stage: 'TARGET INTELLIGENCE', detail: 'Mapping foreign-policy alignment and constraints.', done: 0, total: poiCount });
+  onProgress?.({ stage: 'RESEARCH PLANNING', detail: 'Mapping selected and global target opportunities.', done: 0, total: poiCount });
   onProgress?.({ stage: 'RESEARCHING EVIDENCE', detail: 'Requesting traceable source-backed evidence.', done: 0, total: poiCount });
   onProgress?.({ stage: 'ANALYZING LEGAL FRAMEWORKS', detail: 'Separating legal obligations from political commitments.', done: 0, total: poiCount });
-  let response = await callGemini(form.apiKey, prompt, { ...modelSelection, schema: CHITFORGE_RESPONSE_SCHEMA, onModelStatus: (status) => onProgress?.({ stage: 'MAPPING TARGETS', detail: `Using ${status.model.displayName} for ${status.mode}.`, done: 0, total: poiCount }) });
+  let response = await callGemini(form.apiKey, prompt, { ...modelSelection, schema: CHITFORGE_RESPONSE_SCHEMA, onModelStatus: (status) => onProgress?.({ stage: 'RESEARCH PLANNING', detail: `Using ${status.model.displayName} for ${status.mode}.`, done: 0, total: poiCount }) });
   let text = response.text;
   let mission = await recoverMission({ apiKey: form.apiKey, text, ctx: { form, sliders, includeFollowUp, poiCount, targetingMode, poiTypes, lengthInfo: lengthInfo(sliders.length) }, modelSelection, modelInfo: { primaryModel: response.model.displayName } });
   const duplicates = findDuplicatePoiIndexes(mission.chits);
@@ -26,7 +26,9 @@ export async function generateMission({ form, sliders, selectedTargets, targetin
     mission = await generateMissingPois({ form, sliders, selectedTargets, targetingMode, includeFollowUp, mission, missing, poiCount, poiTypes, modelSelection });
   }
   onProgress?.({ stage: 'VALIDATING STRUCTURE', detail: `${mission.chits.length}/${poiCount} usable POIs normalized. Validating source structures...`, done: mission.chits.length, total: poiCount });
-  mission.chits = await Promise.all(mission.chits.map(async (poi) => ({ ...poi, evidence: await validateSources(poi.evidence || []) })));
+  { const validated = [];
+  for (const poi of mission.chits || []) validated.push({ ...poi, evidence: await validateSources(poi.evidence || []) });
+  mission.chits = validated; }
   onProgress?.({ stage: 'CALCULATING PRESSURE', detail: 'Calculating local pressure, word count, line and speaking-time metrics.', done: mission.chits.length, total: poiCount });
   mission = await runFactChecks({ mission, form, apiKey: form.apiKey, primaryModel: response.model, modelSelection, onProgress });
   return { ...mission, modelInfo: { model: response.model, factCheckModel: mission.metadata.factCheckModel, mode: response.mode, fallbackLog: response.fallbackLog } };
@@ -80,7 +82,7 @@ async function recoverMission({ apiKey, text, ctx, modelSelection, modelInfo }) 
 function buildFactCheckPrompt({ form, poi, pass }) {
   const instruction = pass === 1 ? `You are ChitForge's factual verification engine. Independently verify every factual claim. Do not rewrite the POI. Classify each claim as verified, partially_verified, disputed, unverified, or false. Check dates, statistics, policies, resolutions, treaties, legal claims, institutional actions, financial claims and source relevance. Do not assume that a source proves a claim merely because it is listed.` : `Independently verify the factual and legal claims. Do not rely on another model's conclusion. Identify unsupported, exaggerated, misleading or incorrectly classified claims. Pay particular attention to legal terminology. Do not classify something as a legal violation unless the evidence actually supports that conclusion.`;
   return `${instruction}
-Return ONLY valid JSON with overallStatus (VERIFIED|MANUAL_VERIFICATION|FAILED), confidence 0-100, claims[], legalAssessment, and classificationAssessment. Check whether each source actually supports its mapped claim and whether the POI classification is evidence-driven.
+Return ONLY valid JSON with overallStatus (VERIFIED|MANUAL_VERIFICATION|FAILED), confidence 0-100, claims[], legalAssessment, and classificationAssessment. Check whether each source actually supports its mapped claim and whether the POI classification is evidence-driven. Return PASS/REVISE/REJECT/NEEDS_EVIDENCE reasoning through source existence, evidence support, legal applicability/binding status, target attribution, agenda relevance, portfolio relevance, Freeze Date validity, allegation-vs-finding distinction, no fabricated URLs, and whether the POI forces defense of a documented record.
 AGENDA: ${form.agenda}
 PORTFOLIO: ${form.portfolio}
 TARGET: ${poi.target}
@@ -131,7 +133,7 @@ export function lengthInfo(length) { return band(length, [[10, { lines: '≈ 1 l
 function aggressionInstruction(value) { return band(value, [[10, 'Use a calm, neutral question with minimal confrontation.'], [30, 'Use a mild challenge that asks for a clear policy explanation.'], [50, 'Use a firm challenge and clearly expose the relevant disagreement.'], [70, 'Use strong direct wording and pressure; ask how the delegation can justify the contradiction.'], [85, 'Use very aggressive but MUN-usable wording. Lead into the contradiction and give little room for vague answers.'], [100, 'Use maximum directness. Lead with the strongest verified contradiction, remove unnecessary diplomatic cushioning, end with a direct challenge, and do not soften the wording. Do not use insults or unsupported accusations.']]); }
 function controversyInstruction(value) { return band(value, [[10, 'Use a normal policy disagreement only.'], [30, 'Use a minor documented inconsistency if available.'], [50, 'Use a clear policy contradiction tied to the agenda.'], [70, 'Use a serious documented contradiction, commitment gap, vote, dispute, or implementation failure.'], [85, 'Prioritize major verified controversies, commitment failures, policy-practice gaps, legal disputes, or financial inconsistencies.'], [100, 'Search for the strongest relevant VERIFIED pressure point available: broken commitments, conflicting statements, voting contradictions, legal disputes, implementation failures, or financial inconsistencies. Never manufacture or exaggerate controversy.']]); }
 function diplomacyInstruction(value) { return band(value, [[10, 'Use blunt, direct wording. Do not add diplomatic cushioning.'], [30, 'Use very direct MUN wording with minimal restraint.'], [50, 'Use normal MUN language with moderate diplomatic restraint.'], [70, 'Use formal language while preserving pressure.'], [85, 'Use highly diplomatic polish without weakening the challenge.'], [100, 'Use maximum diplomatic polish, but preserve the same substantive pressure and direct question. High diplomacy does not reduce pressure.']]); }
-export function buildMissionPrompt({ form, sliders, selectedTargets, targetingMode, includeFollowUp, poiCount, poiTypes = ['AUTO'] }) {
+export function buildMissionPrompt({ form, sliders, selectedTargets, targetingMode, includeFollowUp, poiCount, poisPerCountry = 0, poiTypes = ['AUTO'] }) {
   const manualTargets = selectedTargets.map((c) => `${c.name} (${c.iso})`).join(', ') || 'NONE — target countries are optional; identify useful targets globally if target mode allows.';
   const info = lengthInfo(sliders.length);
   return `COMMITTEE:
@@ -147,7 +149,10 @@ TARGETS:
 ${manualTargets}
 
 TARGET MODE:
-${targetingMode === 'selected_only' ? 'SELECTED TARGETS ONLY' : 'SELECTED + GLOBAL RESEARCH'}
+${targetingMode === 'opposition_only' ? 'OPPOSITION COUNTRIES ONLY — use only the listed opposition countries as targets.' : targetingMode === 'opposition_agenda' ? 'OPPOSITION + AGENDA — target the listed opposition countries and tie every POI directly to the agenda.' : 'GENERAL V0 MODE — preserve portfolio/agenda global discovery while considering opposition countries as optional anchors.'}
+
+POIs PER OPPOSITION COUNTRY (independent from total POIs):
+${poisPerCountry}
 
 NUMBER OF POIs:
 ${poiCount}
@@ -176,11 +181,13 @@ ${includeFollowUp ? 'ON' : 'OFF'}
 POI TYPE:
 ${poiTypes.join(', ')}
 
-You are an expert competitive Model United Nations strategist.
+You are ChitForge V2, a precision MUN intelligence and POI system evolved from the stable V0 foundation. Your central rule: make the opposing delegation defend a documented record, not a generic accusation.
 
-Analyze the represented country's actual foreign-policy interests in relation to the committee and agenda.
+MANDATORY PIPELINE: Portfolio Intelligence Profile → Target Intelligence Profiles for each opposition country → Research Plan → Evidence Packet → Verified Pressure Points → Pinpointed POIs → Invisible Review status. Do not skip from agenda to generic POI.
 
-Research credible evidence and relevant international legal frameworks.
+First build a compact Portfolio Intelligence Profile from evidence: foreign-policy doctrine, alignments, strategic principles, agenda position, interests, commitments, voting patterns where relevant, legitimate criticisms it can make, criticisms that would contradict its own record, coalition opportunities, and sensitivities. Do not hardcode geopolitical assumptions.
+
+For every opposition country, build a Target Intelligence Profile: doctrine, stated principles, regional policy, alliances, agenda position, votes/statements/treaties, historical record, evidence-backed weaknesses, likely defenses and alternative interpretations. Then produce reusable Research Packets and Verified Pressure Points. Research is country/evidence-centric, not POI-centric; one evidence item may support multiple POIs without a new research mission.
 
 Generate concise, simple, hard-hitting POIs.
 
@@ -188,17 +195,23 @@ Do not begin with 'Distinguished delegate'.
 
 Begin directly with the substantive question.
 
-Aggression controls confrontation. ${aggressionInstruction(sliders.aggression)}
+SLIDER PIPELINE: sliders influence research priority, pressure-point ranking and framing; sliders never change facts, dates, legal status, treaty status, attribution, statistics or evidence. Aggression controls how hard verified evidence is used. ${aggressionInstruction(sliders.aggression)}
 
-Controversy controls research depth and political discomfort. ${controversyInstruction(sliders.controversy)}
+Controversy controls research depth and political discomfort: low values prioritize current policy disagreements; high values prioritize historical incidents, controversies, voting contradictions, institutional criticism and accountability gaps only when documented. ${controversyInstruction(sliders.controversy)}
 
-Diplomacy controls wording. ${diplomacyInstruction(sliders.diplomacy)}
+Diplomacy controls attribution and principle-based framing, not filler. Never add ceremonial openings or empty politeness. ${diplomacyInstruction(sliders.diplomacy)}
 
 Length controls actual word count. Stay approximately within ${info.words} and ${info.lines}. Do not add filler.
 
-The ideal POI should expose a documented contradiction, obligation, commitment, policy failure or controversy that makes a clean evasive answer difficult.
+The ideal POI must be built from a Verified Pressure Point containing: targetCountry, portfolioCountry, agenda, issue/event/date/action/actor, target policy/statement, contradiction/weakness, legal framework and legal status, source metadata, evidence excerpt if safe, agenda relevance, portfolio relevance, confidence, freeze assessment, likely defense and follow-up. It should expose a documented contradiction, obligation, commitment, policy failure or controversy that makes a clean evasive answer difficult.
 
 Do not claim a question is literally impossible to answer.
+
+Freeze Date: if provided in the user input or agenda notes, treat it as an event/action/vote/treaty temporal boundary. A later publication can document a pre-freeze event, but a post-freeze event is invalid; if uncertain mark DATE UNCERTAIN.
+
+Legal engine: identify the instrument/principle, applicability, binding status, obligation, conduct, evidence and classification (BINDING VIOLATION, POSSIBLE VIOLATION, LEGAL CONCERN, POLICY CONTRADICTION, POLITICAL COMMITMENT CONTRADICTION, NO CONTRADICTION, INSUFFICIENT EVIDENCE). Never make UNGA resolutions automatically binding. Never upgrade alleged/criticized into found/violated.
+
+Support doctrine traps only when both the stated principle and conflicting action/vote/support are documented: force the target to distinguish its principle from its record.
 
 Do not fabricate:
 - allegations
@@ -241,7 +254,7 @@ Use authoritative legal sources where relevant: UN Charter, UNSC resolutions, UN
 
 Use reputable external sources for documented controversies: Reuters, AP, Financial Times, Bloomberg, BBC, Al Jazeera, major established newspapers, credible investigative organizations, academic publications, and established research institutions. Avoid random blogs, unsourced sites, anonymous claims, social media as primary evidence, AI-generated sources, and Wikipedia as primary evidence.
 
-Generate exactly ${poiCount} distinct POIs. No duplicates. Each POI should preferably attack a different contradiction, commitment, legal issue, evidence point, implementation failure, policy issue, or financial issue.
+Generate exactly ${poiCount} global POIs plus, when POIs PER OPPOSITION COUNTRY is greater than 0, up to that many additional country-specific POIs for each listed opposition country if evidence supports them. Preserve the independence of total POIs and per-country POIs. No duplicates. Each POI should preferably attack a different contradiction, commitment, legal issue, evidence point, implementation failure, policy issue, or financial issue.
 
 Important concepts may be emphasized with Markdown-style bold markers around short phrases only.
 
@@ -258,7 +271,7 @@ Use null for optional values.
 Follow the provided schema.
 
 Required JSON shape:
-{"pois":[{"target":"","question":"","legalFoundation":"","evidence":[{"sourceName":"","organization":"","publicationDate":"","url":"","claimSupported":"","sourceType":"PRIMARY","confidence":0}],"documentedIssue":"","classification":"","classificationReason":"","tacticalImpact":"","followUp":null}]}`;
+{"portfolioProfile":{"summary":"...","interests":["..."],"statements":[{"text":"...","status":"MANUAL VERIFICATION","sources":[]}]},"recommendedTargets":[],"pois":[{"target":"","question":"","legalFoundation":"include binding/non-binding/applicability status","evidence":[{"sourceName":"","organization":"","publicationDate":"","url":"","claimSupported":"","sourceType":"PRIMARY","confidence":0}],"documentedIssue":"specific event/action/date/actor plus contradiction, portfolio relevance, agenda relevance, likely defense, freeze assessment","classification":"DOCTRINE TRAP or VOTING CONTRADICTION or LEGAL CONCERN or other evidence-backed type","classificationReason":"why this exact pressure point is supported","tacticalImpact":"how it forces defense of the documented record","followUp":null}]}`;
 }
 
 async function generateMissingPois({ form, sliders, selectedTargets, targetingMode, includeFollowUp, mission, missing, poiCount, poiTypes = ['AUTO'], modelSelection }) {

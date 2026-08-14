@@ -2,10 +2,10 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { LIQUID_GLASS_PROFILES, createLiquidGlassMap } from './liquidGlass.js';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
-import { WorldMap } from './map.jsx';
+import { WorldMap, parseCountryListInput } from './map.jsx';
 import { loadStoredKey, saveApiKey, clearStoredKey } from './state.js';
 import { generateFollowUp, generateMission, regenerateChit, lengthInfo } from './generation.js';
-import { discoverGeminiModels, refreshModelCapabilities, MODEL_SELECTION_MODES } from './gemini.js';
+import { discoverGeminiModels, refreshModelCapabilities, MODEL_SELECTION_MODES, getGeminiTelemetry } from './gemini.js';
 import { validateMissionInputs } from './validation.js';
 import { downloadBrief } from './export.js';
 import { renderMarkdownBold } from './format.js';
@@ -14,10 +14,11 @@ import { domainFromUrl } from './sourceValidation.js';
 
 const defaultSliders = { aggression: 0, controversy: 0, diplomacy: 0, length: 0 };
 const modes = [
-  ['selected_global', 'Selected + Global Research', 'Selected countries are primary targets; AI may add stronger agenda-relevant targets.'],
-  ['selected_only', 'Selected Targets Only', 'Use only countries selected on the real world map.'],
+  ['general', 'General V0 Mode', 'Preserve classic ChitForge behavior: portfolio and agenda drive global pressure-point discovery.'],
+  ['opposition_only', 'Opposition Countries Only', 'Generate POIs specifically targeting the selected opposition countries.'],
+  ['opposition_agenda', 'Opposition + Agenda', 'Generate POIs for selected opposition countries specifically tied to the agenda.'],
 ];
-const progressStages = ['INITIALIZING', 'READING AGENDA', 'ANALYZING PORTFOLIO', 'ANALYZING FOREIGN POLICY', 'MAPPING TARGETS', 'RESEARCHING EVIDENCE', 'ANALYZING LEGAL FRAMEWORKS', 'GENERATING POIs', 'VALIDATING STRUCTURE', 'FACT CHECK PASS 1', 'FACT CHECK PASS 2', 'CALCULATING PRESSURE', 'FINALIZING CHITS', 'PREPARING DOCX'];
+const progressStages = ['INITIALIZING', 'READING AGENDA', 'PORTFOLIO INTELLIGENCE', 'TARGET INTELLIGENCE', 'RESEARCH PLANNING', 'RESEARCHING EVIDENCE', 'ANALYZING LEGAL FRAMEWORKS', 'GENERATING POIs', 'VALIDATING STRUCTURE', 'FACT CHECK PASS 1', 'FACT CHECK PASS 2', 'CALCULATING PRESSURE', 'FINALIZING CHITS', 'PREPARING DOCX'];
 const MemoWorldMap = React.memo(WorldMap);
 
 function App() {
@@ -26,8 +27,12 @@ function App() {
   const [showKey, setShowKey] = useState(false);
   const [sliders, setSliders] = useState(defaultSliders);
   const [poiCount, setPoiCount] = useState(5);
+  const [poisPerCountry, setPoisPerCountry] = useState(0);
   const [selected, setSelected] = useState([]);
-  const [mode, setMode] = useState('selected_global');
+  const [oppositionCountries, setOppositionCountries] = useState([]);
+  const [oppositionInput, setOppositionInput] = useState('');
+  const [oppositionInvalid, setOppositionInvalid] = useState([]);
+  const [mode, setMode] = useState('general');
   const [includeFollowUp, setIncludeFollowUp] = useState(false);
   const [poiTypes, setPoiTypes] = useState(['AUTO']);
   const [activity, setActivity] = useState([]);
@@ -67,6 +72,8 @@ function App() {
   const showError = (err) => setError({ message: err.message || 'Generation failed. Please try again.', diagnostic: err.diagnostic, status: err.status, category: err.category });
   const pushProgress = (next) => { setStatus(next); setActivity((items) => [{ time: new Date().toLocaleTimeString(), stage: next.stage, detail: next.detail, done: next.done, total: next.total }, ...items].slice(0, 14)); };
 
+  const selectedPortfolio = selected[0];
+  const geminiStats = getGeminiTelemetry();
   const modelSelection = { modelMode, manualModelId };
   const refreshModels = async (verify = false) => {
     if (!form.apiKey.trim()) { setError({ message: 'Missing Gemini API key. Enter your key and try again.' }); return; }
@@ -88,13 +95,13 @@ function App() {
     setRecommendations([]);
     try {
       setActivity([]);
-      const result = await generateMission({ form, sliders, selectedTargets: selected, targetingMode: mode, includeFollowUp, poiCount, poiTypes, onProgress: pushProgress, modelSelection });
+      const result = await generateMission({ form: { ...form, portfolio: selectedPortfolio?.name || form.portfolio }, sliders, selectedTargets: oppositionCountries, oppositionCountries, targetingMode: mode, includeFollowUp, poiCount, poisPerCountry, poiTypes, onProgress: pushProgress, modelSelection });
       setPortfolioProfile(result.portfolioProfile);
       setRecommendations(result.recommendedTargets || []);
       setChits(result.chits);
       setModelInfo(result.modelInfo || null);
-      if (result.chits.length < poiCount && mode !== 'selected_only') setError({ message: `${result.chits.length} / ${poiCount} POIs generated. Gemini did not return enough distinct, defensible POIs after retry attempts. No duplicates were inserted.` });
-      if (!result.chits.length) setError({ message: mode === 'selected_only' && !selected.length ? 'Selected Targets Only needs at least one selected target. Zero selected targets is valid in Selected + Global Research mode.' : 'No defensible targets were discovered. Try Selected + Global Research or refine the agenda.' });
+      if (result.chits.length < poiCount && mode !== 'opposition_only') setError({ message: `${result.chits.length} / ${poiCount} POIs generated. Gemini did not return enough distinct, defensible POIs after retry attempts. No duplicates were inserted.` });
+      if (!result.chits.length) setError({ message: mode === 'opposition_only' && !oppositionCountries.length ? 'Selected Targets Only needs at least one selected target. Zero selected targets is valid in Selected + Global Research mode.' : 'No defensible targets were discovered. Try Selected + Global Research or refine the agenda.' });
     } catch (err) {
       showError(err);
     } finally {
@@ -124,7 +131,7 @@ function App() {
   const copyText = (text) => navigator.clipboard?.writeText(text).catch(() => setError({ message: 'Clipboard access was blocked by the browser.' }));
   const copyAll = () => copyText(chits.map((chit, index) => `POI ${index + 1} — ${chit.target}\n${chit.poi}`).join('\n\n'));
   const exportBrief = (items = chits) => {
-    try { pushProgress({ stage: 'PREPARING DOCX', detail: 'Preparing professional DOCX tactical brief.', done: items.length, total: items.length || 1 }); downloadBrief({ form, sliders, portfolioProfile, chits: items, poiCount, selectedTargets: selected, modelInfo, targetMode: mode }); }
+    try { pushProgress({ stage: 'PREPARING DOCX', detail: 'Preparing professional DOCX tactical brief.', done: items.length, total: items.length || 1 }); downloadBrief({ form, sliders, portfolioProfile, chits: items, poiCount, selectedTargets: oppositionCountries, modelInfo, targetMode: mode }); }
     catch { setError({ message: 'DOCX export failed. Please try again in a modern browser.' }); }
   };
 
@@ -163,7 +170,8 @@ function App() {
         </div>
         <h2>Targeting Mode</h2>
         <div className="modes">{modes.map(([id, label, help]) => <label key={id} className="mode"><input type="radio" checked={mode === id} onChange={() => setMode(id)} /> <b>{label}</b><small>{help}</small></label>)}</div>
-        <label>POIs to Generate<input type="number" min="1" max="20" value={poiCount} onChange={(e) => setPoiCount(Math.max(1, Math.min(20, Number(e.target.value) || 1)))} /></label>
+        <label>Total POIs<input type="number" min="1" max="20" value={poiCount} onChange={(e) => setPoiCount(Math.max(1, Math.min(20, Number(e.target.value) || 1)))} /></label>
+        <label>POIs per opposition country<input type="number" min="0" max="10" value={poisPerCountry} onChange={(e) => setPoisPerCountry(Math.max(0, Math.min(10, Number(e.target.value) || 0)))} /></label>
         <label className="check switchField"><input type="checkbox" checked={includeFollowUp} onChange={(e) => setIncludeFollowUp(e.target.checked)} /><span className="glassSwitch" aria-hidden="true"><i /></span><span>Generate Follow-Up</span></label>
         <h2>POI Type</h2>
         <div className="typeGrid" role="group" aria-label="POI type selection">{POI_TYPES.map((type) => <label key={type} className={`typeChip ${poiTypes.includes(type) ? 'active' : ''}`}>
@@ -175,13 +183,13 @@ function App() {
           })} /> {type}
         </label>)}</div>
 
-        <div className="notice"><b>TARGETS: OPTIONAL</b><br />{selected.length ? `${selected.length} manual target(s) selected.` : 'GLOBAL RESEARCH ENABLED unless Selected Targets Only is used.'}</div>
+        <div className="notice"><b>TARGETS: OPTIONAL</b><br />{oppositionCountries.length ? `${oppositionCountries.length} opposition countr(y/ies) selected.` : 'GENERAL V0 MODE can still discover targets; opposition modes need opposition countries.'}</div>
         {Object.keys(sliders).map((key) => <GlassRange key={key} name={key} value={sliders[key]} info={key === 'length' ? lengthInfo(sliders.length) : null} onCommit={commitSlider} />)}
         <button className="primary" onClick={runGeneration} disabled={busy}>{busy ? 'Synthesizing Tactical POIs…' : 'Generate Tactical POI Array'}</button>
         {error && <ErrorBox error={error} />}
       </section>
-      <section className="panel mapPanel"><h2>Real World Target Map</h2><MemoWorldMap selected={selected} setSelected={setSelected} portfolio={form.portfolio} /></section>
-      <aside className="panel queue glass-sidebar"><details className="settingsPanel" open><summary>Generation Settings</summary><div className="settingsGrid"><span>POI Count<b>{poiCount}</b></span><span>POI Type<b>{poiTypes.join(', ')}</b></span><span>Target Mode<b>{mode}</b></span><span>Follow-ups<b>{includeFollowUp ? 'ON' : 'OFF'}</b></span><span>Model<b>{modelInfo?.model?.displayName || modelMode}</b></span><span>Aggression<b>{sliders.aggression}</b></span><span>Controversy<b>{sliders.controversy}</b></span><span>Diplomacy<b>{sliders.diplomacy}</b></span><span>Length<b>{sliders.length}</b></span></div><GlassRange name="opacity" value={uiOpacity} onCommit={commitOpacity} /></details><h2>Selected Targets</h2>{selected.length ? selected.map((c) => <button key={c.iso} className="pill" onClick={() => setSelected(selected.filter((x) => x.iso !== c.iso))}>{c.name}<span>{c.iso}</span>×</button>) : <p className="muted">No manual targets selected. Auto-discovery can generate anyway.</p>}<button onClick={() => setSelected([])}>Clear selections</button>{recommendations.length > 0 && <><h2>AI Recommended Targets</h2>{recommendations.map((target) => <div className="recommendation" key={`${target.name}-${target.reason}`}><b>{target.name}</b><small>{target.reason}</small></div>)}</>}{(busy || status) && <ProgressPanel status={status} poiCount={poiCount} activity={activity} />}</aside>
+      <section className="panel mapPanel"><h2>Real World Target Map</h2><p className="muted">Left-click selects the portfolio country. Right-click toggles opposition countries in red.</p><MemoWorldMap selected={selected} setSelected={(items) => { setSelected(items); if (items[0]) updateForm('portfolio', items[0].name); }} portfolio={selectedPortfolio?.name || form.portfolio} oppositionCountries={oppositionCountries} setOppositionCountries={(items) => { setOppositionCountries(items); setOppositionInput(items.map((item) => item.name).join(', ')); setOppositionInvalid([]); }} /></section>
+      <aside className="panel queue glass-sidebar"><details className="settingsPanel" open><summary>Generation Settings</summary><div className="settingsGrid"><span>Total POIs<b>{poiCount}</b></span><span>POIs/Country<b>{poisPerCountry}</b></span><span>Opposition<b>{oppositionCountries.length}</b></span><span>POI Type<b>{poiTypes.join(', ')}</b></span><span>Target Mode<b>{mode}</b></span><span>Follow-ups<b>{includeFollowUp ? 'ON' : 'OFF'}</b></span><span>Model<b>{modelInfo?.model?.displayName || modelMode}</b></span><span>Aggression<b>{sliders.aggression}</b></span><span>Controversy<b>{sliders.controversy}</b></span><span>Diplomacy<b>{sliders.diplomacy}</b></span><span>Length<b>{sliders.length}</b></span></div><details><summary>Stats for Nerds</summary><div className="settingsGrid"><span>Gemini Requests<b>{geminiStats.requests.length}</b></span><span>Cache Hits<b>{geminiStats.cacheHits}</b></span><span>Cache Misses<b>{geminiStats.cacheMisses}</b></span><span>In-flight Dedupes<b>{geminiStats.inFlightDedupes}</b></span><span>Retries<b>{geminiStats.retries}</b></span><span>429s<b>{geminiStats.rateLimits}</b></span><span>5xx<b>{geminiStats.failures5xx}</b></span><span>Provider Quota<b>{geminiStats.providerQuota}</b></span></div><small>Quota is shown only when provider-reported; otherwise UNKNOWN.</small></details><GlassRange name="opacity" value={uiOpacity} onCommit={commitOpacity} /></details><h2>Portfolio</h2>{selectedPortfolio ? <button className="pill" onClick={() => setSelected([])}>{selectedPortfolio.name}<span>{selectedPortfolio.iso}</span>×</button> : <p className="muted">No map portfolio selected; using typed portfolio.</p>}<h2>Opposition Countries</h2><textarea value={oppositionInput} onChange={(e) => { const value = e.target.value; setOppositionInput(value); const parsed = parseCountryListInput(value); setOppositionCountries(parsed.resolved); setOppositionInvalid(parsed.invalid); }} placeholder="China, United States, Russia" />{oppositionInvalid.length > 0 && <p className="oppositionError">Unresolved: {oppositionInvalid.join(', ')}</p>}{oppositionCountries.length ? oppositionCountries.map((c) => <button key={c.iso} className="pill" onClick={() => { const next = oppositionCountries.filter((x) => x.iso !== c.iso); setOppositionCountries(next); setOppositionInput(next.map((item) => item.name).join(', ')); }}>{c.name}<span>{c.iso}</span>×</button>) : <p className="muted">No opposition countries selected. General mode can still generate.</p>}<button onClick={() => { setSelected([]); setOppositionCountries([]); setOppositionInput(''); setOppositionInvalid([]); }}>Clear selections</button>{recommendations.length > 0 && <><h2>AI Recommended Targets</h2>{recommendations.map((target) => <div className="recommendation" key={`${target.name}-${target.reason}`}><b>{target.name}</b><small>{target.reason}</small></div>)}</>}{(busy || status) && <ProgressPanel status={status} poiCount={poiCount} activity={activity} />}</aside>
     </main>
     {portfolioProfile && <PortfolioIntel profile={portfolioProfile} />}
     {chits.length > 0 && <section className="poiWindow"><div className="arrayHeader"><div><span className="eyebrow">CHITFORGE</span><h2>TACTICAL POI ARRAY</h2><strong>{chits.length} / {poiCount} POIs GENERATED</strong>{modelInfo?.model && <strong>MODEL: {modelInfo.model.displayName}</strong>}<strong>FACT CHECK: 2-PASS</strong></div><div className="actions"><button onClick={copyAll}>Copy All</button><button onClick={() => exportBrief()}>Download DOCX</button><button onClick={runGeneration} disabled={busy}>Regenerate All</button></div></div><div className="chits">{chits.map((chit, i) => <ChitCard key={`${chit.target}-${i}-${chit.poi}`} chit={chit} number={i + 1} onCopy={copyText} onExport={() => exportBrief([chit])} onFollowUp={() => addFollowUp(i)} onRegenerate={() => regenerateOne(i)} />)}</div></section>}
