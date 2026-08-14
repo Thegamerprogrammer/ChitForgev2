@@ -673,3 +673,7 @@ button::after, .backgroundPicker::after, .sourceLink::after {
   opacity: .65;
 }
 .titleCard img { display: none; }
+
+.country.opposition { fill: rgba(255,75,92,.58); stroke: rgba(255,190,196,.98); stroke-width: 1.25; filter: drop-shadow(0 0 10px rgba(255,75,92,.42)); }
+.country.portfolio.opposition { stroke-dasharray: 4 2; }
+.oppositionError { color: #ffd0d0; margin-top: 6px; }

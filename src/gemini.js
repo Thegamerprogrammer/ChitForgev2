@@ -4,6 +4,12 @@ import { CHITFORGE_RESPONSE_SCHEMA, FOLLOW_UP_RESPONSE_SCHEMA, FACT_CHECK_RESPON
 const API_VERSION = 'v1beta';
 const BASE_URL = 'https://generativelanguage.googleapis.com';
 const cache = new Map();
+const requestCache = new Map();
+const inFlight = new Map();
+const telemetry = { requests: [], cacheHits: 0, cacheMisses: 0, inFlightDedupes: 0, retries: 0, rateLimits: 0, failures5xx: 0, providerQuota: 'UNKNOWN' };
+export function getGeminiTelemetry() { return { ...telemetry, requests: telemetry.requests.slice(-50) }; }
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+function stableHash(value) { let h = 0; for (let i = 0; i < value.length; i += 1) h = Math.imul(31, h) + value.charCodeAt(i) | 0; return String(h); }
 
 export class GeminiError extends Error {
   constructor(message, { category, status, reason, diagnostic, cause, fallbackLog, model, rawText } = {}) {
@@ -52,24 +58,45 @@ function buildBody(prompt, schema, model, { nativeJson = true } = {}) {
   return { contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig };
 }
 
-async function rawGenerate(apiKey, model, prompt, schema, { timeoutMs = 70000, nativeJson = true } = {}) {
+async function rawGenerate(apiKey, model, prompt, schema, { timeoutMs = 70000, nativeJson = true, operation = 'generation' } = {}) {
+  const key = `${model.id}:${nativeJson}:${stableHash(prompt)}:${stableHash(JSON.stringify(schema || {}))}`;
+  if (requestCache.has(key)) { telemetry.cacheHits += 1; return requestCache.get(key); }
+  if (inFlight.has(key)) { telemetry.inFlightDedupes += 1; return inFlight.get(key); }
+  telemetry.cacheMisses += 1;
+  const task = (async () => {
   const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const started = Date.now();
+  telemetry.requests.push({ operation, stage: operation, requestedModel: model.id, resolvedModel: model.id, actualModel: model.id, attempt: 1, timestamp: new Date().toISOString(), inputSize: prompt.length, outputTokenLimit: model?.outputTokenLimit || null, searchEnabled: false, cacheState: 'MISS' });
   try {
-    const res = await fetch(endpoint(apiKey, model.id), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey }, signal: controller.signal, body: JSON.stringify(buildBody(prompt, schema, model, { nativeJson })) });
+    let res = await fetch(endpoint(apiKey, model.id), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey }, signal: controller.signal, body: JSON.stringify(buildBody(prompt, schema, model, { nativeJson })) });
+    if ([429, 500, 503].includes(res.status)) {
+      if (res.status === 429) telemetry.rateLimits += 1;
+      if (res.status >= 500) telemetry.failures5xx += 1;
+      const retryAfter = Number(res.headers.get('retry-after') || 0);
+      telemetry.retries += 1;
+      await sleep((retryAfter ? retryAfter * 1000 : 700) + Math.round(Math.random() * 350));
+      telemetry.requests.push({ operation, stage: operation, requestedModel: model.id, resolvedModel: model.id, actualModel: model.id, attempt: 2, timestamp: new Date().toISOString(), inputSize: prompt.length, outputTokenLimit: model?.outputTokenLimit || null, searchEnabled: false, cacheState: 'RETRY' });
+      res = await fetch(endpoint(apiKey, model.id), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey }, signal: controller.signal, body: JSON.stringify(buildBody(prompt, schema, model, { nativeJson })) });
+    }
     if (!res.ok) { const reason = await parseErrorResponse(res); const category = (res.status === 401 || res.status === 403 || /api[_ ]?key|key not valid|API_KEY_INVALID/i.test(reason)) ? 'invalid-api-key' : res.status === 404 ? 'model-unavailable' : [429, 500, 503].includes(res.status) ? 'transient-model-failure' : `http-${res.status}`; throw new GeminiError(userMessageForStatus(res.status, reason), { category, status: res.status, reason, model: model.displayName }); }
     const data = await res.json();
     if (data.promptFeedback?.blockReason) throw new GeminiError(`Gemini blocked the request for safety reasons: ${data.promptFeedback.blockReason}.`, { category: 'safety-filter', reason: data.promptFeedback.blockReason, model: model.displayName });
     const text = extractGeminiText(data).trim();
     if (!text) throw new GeminiError('Gemini returned an empty response. Try generating again.', { category: 'empty-response', model: model.displayName, diagnostic: import.meta.env.DEV ? `MODEL: ${model.displayName}\nHTTP STATUS: ${res.status}\nRAW RESPONSE LENGTH: ${JSON.stringify(data).length}\nEXTRACTED TEXT LENGTH: 0` : undefined });
+    telemetry.requests[telemetry.requests.length - 1].success = true; telemetry.requests[telemetry.requests.length - 1].latency = Date.now() - started;
+    requestCache.set(key, text);
     return text;
-  } catch (error) { if (error instanceof GeminiError) throw error; if (error.name === 'AbortError') throw new GeminiError('Request timed out.', { category: 'timeout', cause: error, model: model.displayName }); throw new GeminiError('Could not reach Gemini.', { category: 'network', cause: error, model: model.displayName }); } finally { clearTimeout(timer); }
+  } catch (error) { if (error instanceof GeminiError) throw error; if (error.name === 'AbortError') throw new GeminiError('Request timed out.', { category: 'timeout', cause: error, model: model.displayName }); throw new GeminiError('Could not reach Gemini.', { category: 'network', cause: error, model: model.displayName }); } finally { clearTimeout(timer); inFlight.delete(key); }
+  })();
+  inFlight.set(key, task);
+  return task;
 }
 
 export async function refreshModelCapabilities(apiKey, { force = true } = {}) { return discoverGeminiModels(apiKey, { force }); }
 
 export function pickModel(models, modelMode, manualModelId) {
   if (modelMode === MODEL_SELECTION_MODES.ROTATION) return selectSmartRotation(models);
-  if (modelMode === MODEL_SELECTION_MODES.MANUAL) return models.find((m) => m.id === manualModelId) || selectBest(models);
+  if (modelMode === MODEL_SELECTION_MODES.MANUAL) return models.find((m) => m.id === manualModelId) || null;
   return selectBest(models);
 }
 
@@ -77,9 +104,11 @@ export async function callGemini(apiKey, prompt, { modelMode = MODEL_SELECTION_M
   const discovered = await discoverGeminiModels(apiKey);
   const ranked = discovered.compatible;
   if (!ranked.length) throw new GeminiError('No Gemini text-generation models were returned for this API key. Refresh models or check Gemini API access.', { category: 'no-generation-models' });
-  const selected = pickModel(ranked, modelMode, manualModelId) || ranked[0];
+  const selected = pickModel(ranked, modelMode, manualModelId);
+  if (!selected) throw new GeminiError('Manual model selection is unavailable. Refresh models and choose an exact compatible model; ChitForge will not silently fall back in manual mode.', { category: 'manual-model-unavailable' });
   const fallbackLog = [];
-  for (const model of [selected, ...ranked.filter((m) => m.id !== selected.id)]) {
+  const candidates = modelMode === MODEL_SELECTION_MODES.MANUAL ? [selected] : [selected, ...ranked.filter((m) => m.id !== selected.id)];
+  for (const model of candidates) {
     onModelStatus?.({ model, mode: modelMode, fallbackLog });
     try {
       try { return { text: await rawGenerate(apiKey, model, prompt, schema, { timeoutMs, nativeJson: true }), model, mode: modelMode, fallbackLog, usedNativeJson: true }; }
