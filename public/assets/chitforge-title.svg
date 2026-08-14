@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1536 512" role="img" aria-labelledby="title desc">
+  <title id="title">ChitForge</title>
+  <desc id="desc">Pixel-styled ChitForge title card with warm upper pixels and cool blue lower pixels.</desc>
+  <defs>
+    <linearGradient id="pixelGradient" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#ff3b13"/>
+      <stop offset="0.33" stop-color="#ff7a00"/>
+      <stop offset="0.52" stop-color="#ffe431"/>
+      <stop offset="0.56" stop-color="#22d7ff"/>
+      <stop offset="0.78" stop-color="#1389ff"/>
+      <stop offset="1" stop-color="#0754d9"/>
+    </linearGradient>
+    <filter id="crispShadow" x="-8%" y="-20%" width="116%" height="140%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="12" dy="14" stdDeviation="0" flood-color="#030507" flood-opacity="0.9"/>
+      <feDropShadow dx="22" dy="24" stdDeviation="0" flood-color="#0b1016" flood-opacity="0.62"/>
+    </filter>
+  </defs>
+  <rect width="1536" height="512" fill="none"/>
+  <g transform="translate(116 316) skewX(-10) rotate(-5)" filter="url(#crispShadow)">
+    <text x="0" y="0"
+      font-family="Courier New, SF Mono, Cascadia Mono, Roboto Mono, monospace"
+      font-size="180"
+      font-weight="900"
+      letter-spacing="-18"
+      fill="url(#pixelGradient)"
+      stroke="#111820"
+      stroke-width="18"
+      stroke-linejoin="miter"
+      paint-order="stroke fill">ChitForge</text>
+    <text x="0" y="0"
+      font-family="Courier New, SF Mono, Cascadia Mono, Roboto Mono, monospace"
+      font-size="180"
+      font-weight="900"
+      letter-spacing="-18"
+      fill="url(#pixelGradient)"
+      stroke="#ffef6a"
+      stroke-width="2"
+      stroke-linejoin="miter"
+      opacity="0.45">ChitForge</text>
+    <g opacity="0.26" fill="#ffffff">
+      <rect x="66" y="-118" width="22" height="14"/><rect x="212" y="-126" width="24" height="15"/><rect x="410" y="-146" width="28" height="15"/>
+      <rect x="662" y="-161" width="32" height="16"/><rect x="892" y="-123" width="24" height="14"/><rect x="1110" y="-151" width="28" height="15"/>
+    </g>
+    <g opacity="0.22" fill="#061321">
+      <rect x="74" y="8" width="40" height="18"/><rect x="350" y="18" width="46" height="19"/><rect x="586" y="2" width="42" height="18"/>
+      <rect x="804" y="20" width="52" height="20"/><rect x="1054" y="8" width="44" height="18"/>
+    </g>
+  </g>
+</svg>
